@@ -21,55 +21,15 @@ Bevy Polyline is a plugin for [Bevy Engine](https://bevyengine.org/) that adds i
 
 Bevy Polyline closely mimics the way `Mesh`es are rendered in Bevy. It works internally by passing a minimal Instance Buffer to the GPU, containing only the line segment endpoints and then completely determines all vertex positions within the vertex shader, such that the triangles form a line that is rotated around it's longitudinal axis to face towards the camera. The shader code is based on [this great tutorial by Rye Terrell](https://wwwtyro.net/2019/11/18/instanced-lines.html).
 
-### Examples
-There are two examples, linestrip demonstrates how to make a very basic static Polyline. nbody (shown in the above demo) demonstrates how to do updateable `Polyline`s, by changing the vertices of a `Polyline`.
-
 ## Usage
-Usage of Bevy Polyline is quite simple. First add it to your `Cargo.toml`:
 
-```toml
-[dependencies]
-bevy_polyline = "0.2"
-```
-
-You add it as a plugin to your app:
-```rust
-app.add_plugin(PolylinePlugin);
-```
-
-And then you can add some Polylines through PolylineBundle
-```rust
-fn setup(
-    mut commands: Commands,
-    mut polyline_materials: ResMut<Assets<PolylineMaterial>>,
-    mut polylines: ResMut<Assets<Polyline>>,
-) {
-    commands.spawn_bundle(PolylineBundle {
-        polyline: polylines.add(Polyline {
-            vertices: vec![-Vec3::ONE, Vec3::ONE],
-            ..Default::default()
-        }),
-        material: polyline_materials.add(PolylineMaterial {
-            width: 3.0,
-            color: Color::RED,
-            perspective: true,
-            ..Default::default()
-        }),
-        ..Default::default()
-    });
-}
-```
+See the `minimal` example for basic usage.
 
 ### Transform
 `Polyline`s respect positioning through `GlobalTransform`, so you can position them directly, or through the use of a `Transform` hierarchy.
 
 ### PolylineMaterial
 Currently the main way of customizing a `Polyline` is by changing the `PolylineMaterial`, which, as can be seen above, has fields for `width`, `color` and `perspective`. `width` directly correlates to screen pixels in non-perspective mode. In `perspective` mode `width` gets divided by the w component of the homogeneous coordinate, meaning it corresponds to screen pixels at the near plane and becomes progressively smaller further away.
-
-### Shaders
-For more significant customization, you have to make a custom shader, although it's likely we'll add more shaders in the future. The current version only implements line strips (i.e. `PolyLine`s rendered as connected line segments) with no caps.
-
-Due to the nature of its instanced rendering, Bevy Polyline comes with fairly specific shaders. You can still replace these with custom ones, but you will have to keep a good chunk of the shader in tact if you want to use Bevy Polyline's way of creating the line triangles.
 
 ### Aliasing/shimmering
 Bevy Polyline does some work to reduce aliasing, by implementing the line thinness fade from https://acegikmo.com/shapes/docs/#anti-aliasing. But if your line segments are very short, you will still see shimmering, caused by triangles < 1 pixel in size. This can be reduced by only adding segments of a minimum length.
@@ -80,10 +40,12 @@ Due to instancing, Bevy Polyline only makes one drawcall per `PolyLine`, one for
 ## Bevy Version Support
 We intend to track the `main` branch of Bevy. PRs supporting this are welcome!
 
-|bevy|bevy_polyline|
-|---|---|
-|0.7|0.2|
-|0.6|0.1|
+| bevy | bevy_polyline |
+| ---- | ------------- |
+| 0.9  | 0.4           |
+| 0.8  | 0.3           |
+| 0.7  | 0.2           |
+| 0.6  | 0.1           |
 
 ### Community Support
 If you want some help using this plugin, you can ask in the Bevy Discord at https://discord.gg/bevy.
@@ -92,8 +54,8 @@ If you want some help using this plugin, you can ask in the Bevy Discord at http
 
 bevy_polyline is free and open source! All code in this repository is dual-licensed under either:
 
-* MIT License (LICENSE-MIT or http://opensource.org/licenses/MIT)
-* Apache License, Version 2.0 (LICENSE-APACHE or http://www.apache.org/licenses/LICENSE-2.0)
+* MIT License ([LICENSE-MIT](LICENSE-MIT) or [http://opensource.org/licenses/MIT](http://opensource.org/licenses/MIT))
+* Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or [http://www.apache.org/licenses/LICENSE-2.0](http://www.apache.org/licenses/LICENSE-2.0))
 
 at your option. This means you can select the license you prefer! This dual-licensing approach is the de-facto standard in the Rust ecosystem and there are very good reasons to include both.
 

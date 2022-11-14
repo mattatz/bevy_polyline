@@ -9,14 +9,14 @@ use bevy::{
     prelude::*,
     reflect::TypeUuid,
     render::{
+        extract_component::{ComponentUniforms, DynamicUniformIndex, UniformComponentPlugin},
         render_asset::{RenderAsset, RenderAssetPlugin, RenderAssets},
-        render_component::{ComponentUniforms, DynamicUniformIndex, UniformComponentPlugin},
         render_phase::{EntityRenderCommand, RenderCommandResult, TrackedRenderPass},
-        render_resource::{std140::AsStd140, *},
+        render_resource::*,
         renderer::RenderDevice,
         texture::BevyDefault,
         view::{ViewUniform, ViewUniforms},
-        RenderApp, RenderStage,
+        Extract, RenderApp, RenderStage,
     },
 };
 
@@ -91,7 +91,7 @@ impl RenderAsset for Polyline {
     }
 }
 
-#[derive(AsStd140, Component, Clone)]
+#[derive(Component, Clone, ShaderType)]
 pub struct PolylineUniform {
     pub transform: Mat4,
     //pub inverse_transpose_model: Mat4,
@@ -107,16 +107,18 @@ pub struct GpuPolyline {
 pub fn extract_polylines(
     mut commands: Commands,
     mut previous_len: Local<usize>,
-    query: Query<(
-        Entity,
-        &ComputedVisibility,
-        &GlobalTransform,
-        &Handle<Polyline>,
-    )>,
+    query: Extract<
+        Query<(
+            Entity,
+            &ComputedVisibility,
+            &GlobalTransform,
+            &Handle<Polyline>,
+        )>,
+    >,
 ) {
     let mut values = Vec::with_capacity(*previous_len);
     for (entity, computed_visibility, transform, handle) in query.iter() {
-        if !computed_visibility.is_visible {
+        if !computed_visibility.is_visible() {
             continue;
         }
         let transform = transform.compute_matrix();
@@ -135,7 +137,7 @@ pub fn extract_polylines(
     commands.insert_or_spawn_batch(values);
 }
 
-#[derive(Clone)]
+#[derive(Clone, Resource)]
 pub struct PolylinePipeline {
     pub view_layout: BindGroupLayout,
     pub polyline_layout: BindGroupLayout,
@@ -153,7 +155,7 @@ impl FromWorld for PolylinePipeline {
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Uniform,
                         has_dynamic_offset: true,
-                        min_binding_size: BufferSize::new(ViewUniform::std140_size_static() as u64),
+                        min_binding_size: BufferSize::new(ViewUniform::min_size().into()),
                     },
                     count: None,
                 },
@@ -168,7 +170,7 @@ impl FromWorld for PolylinePipeline {
                 ty: BindingType::Buffer {
                     ty: BufferBindingType::Uniform,
                     has_dynamic_offset: true,
-                    min_binding_size: BufferSize::new(PolylineUniform::std140_size_static() as u64),
+                    min_binding_size: BufferSize::new(PolylineUniform::min_size().into()),
                 },
                 count: None,
             }],
@@ -183,6 +185,7 @@ impl FromWorld for PolylinePipeline {
 
 impl SpecializedRenderPipeline for PolylinePipeline {
     type Key = PolylinePipelineKey;
+
     fn specialize(&self, key: Self::Key) -> RenderPipelineDescriptor {
         let vertex_attributes = vec![
             VertexAttribute {
@@ -205,6 +208,13 @@ impl SpecializedRenderPipeline for PolylinePipeline {
             // For the transparent pass, fragments that are closer will be alpha blended
             // but their depth is not written to the depth buffer
             depth_write_enabled = false;
+        } else if key.contains(PolylinePipelineKey::PERSPECTIVE) {
+            // We need to use transparent pass with perspective to support thin line fading.
+            label = "transparent_polyline_pipeline".into();
+            blend = Some(BlendState::ALPHA_BLENDING);
+            // Because we are expecting an opaque matl we should enable depth writes, as we don't
+            // need to blend most lines.
+            depth_write_enabled = true;
         } else {
             label = "opaque_polyline_pipeline".into();
             blend = Some(BlendState::REPLACE);
@@ -213,6 +223,11 @@ impl SpecializedRenderPipeline for PolylinePipeline {
             // depth buffer
             depth_write_enabled = true;
         }
+
+        let format = match key.contains(PolylinePipelineKey::HDR) {
+            true => bevy::render::view::ViewTarget::TEXTURE_FORMAT_HDR,
+            false => TextureFormat::bevy_default(),
+        };
 
         RenderPipelineDescriptor {
             vertex: VertexState {
@@ -229,11 +244,11 @@ impl SpecializedRenderPipeline for PolylinePipeline {
                 shader: SHADER_HANDLE.typed::<Shader>(),
                 shader_defs,
                 entry_point: "fragment".into(),
-                targets: vec![ColorTargetState {
-                    format: TextureFormat::bevy_default(),
+                targets: vec![Some(ColorTargetState {
+                    format,
                     blend,
                     write_mask: ColorWrites::ALL,
-                }],
+                })],
             }),
             layout: None, // This is set in `PolylineMaterialPipeline::specialize()`
             primitive: PrimitiveState {
@@ -264,7 +279,7 @@ impl SpecializedRenderPipeline for PolylinePipeline {
             multisample: MultisampleState {
                 count: key.msaa_samples(),
                 mask: !0,
-                alpha_to_coverage_enabled: false, //TODO: Do we need this for blending faded lines?
+                alpha_to_coverage_enabled: false,
             },
             label: Some(label),
         }
@@ -274,29 +289,40 @@ impl SpecializedRenderPipeline for PolylinePipeline {
 bitflags::bitflags! {
     #[repr(transparent)]
     // NOTE: Apparently quadro drivers support up to 64x MSAA.
-    /// MSAA uses the highest 6 bits for the MSAA sample count - 1 to support up to 64x MSAA.
+    // MSAA uses the highest 3 bits for the MSAA log2(sample count) to support up to 128x MSAA.
     pub struct PolylinePipelineKey: u32 {
         const NONE = 0;
         const PERSPECTIVE = (1 << 0);
         const TRANSPARENT_MAIN_PASS = (1 << 1);
-        const MSAA_RESERVED_BITS = PolylinePipelineKey::MSAA_MASK_BITS << PolylinePipelineKey::MSAA_SHIFT_BITS;
+        const HDR = (1 << 2);
+        const MSAA_RESERVED_BITS = Self::MSAA_MASK_BITS << Self::MSAA_SHIFT_BITS;
     }
 }
 
 impl PolylinePipelineKey {
-    const MSAA_MASK_BITS: u32 = 0b111111;
-    const MSAA_SHIFT_BITS: u32 = 32 - 6;
+    const MSAA_MASK_BITS: u32 = 0b111;
+    const MSAA_SHIFT_BITS: u32 = 32 - Self::MSAA_MASK_BITS.count_ones();
 
     pub fn from_msaa_samples(msaa_samples: u32) -> Self {
-        let msaa_bits = ((msaa_samples - 1) & Self::MSAA_MASK_BITS) << Self::MSAA_SHIFT_BITS;
-        PolylinePipelineKey::from_bits(msaa_bits).unwrap()
+        let msaa_bits =
+            (msaa_samples.trailing_zeros() & Self::MSAA_MASK_BITS) << Self::MSAA_SHIFT_BITS;
+        Self::from_bits(msaa_bits).unwrap()
     }
 
     pub fn msaa_samples(&self) -> u32 {
-        ((self.bits >> Self::MSAA_SHIFT_BITS) & Self::MSAA_MASK_BITS) + 1
+        1 << ((self.bits >> Self::MSAA_SHIFT_BITS) & Self::MSAA_MASK_BITS)
+    }
+
+    pub fn from_hdr(hdr: bool) -> Self {
+        if hdr {
+            PolylinePipelineKey::HDR
+        } else {
+            PolylinePipelineKey::NONE
+        }
     }
 }
 
+#[derive(Resource)]
 pub struct PolylineBindGroup {
     pub value: BindGroup,
 }
